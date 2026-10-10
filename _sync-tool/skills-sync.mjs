@@ -83,6 +83,7 @@ function unit() { return UNITS[args.unit === 'kb' ? 'kb' : 'skills']; }
 
 // 知识库模式下把提示语里的"技能"自动换成"知识库/内容"，这样同一套逻辑两边都读得通
 const KB_WORDS = [
+  ['正在克隆（第一次要下载几万个文件，可能要几分钟）', '正在克隆（第一次要下载整个知识库，可能要几分钟）'],
   ['把技能搬进', '把知识库搬进'],
   ['克隆技能库并接管', '克隆知识库并接管'],
   ['技能库的 GitHub 地址（https://…/dsh-skills.git）', '知识库的 GitHub 地址（https://…/dsh-kb.git）'],
