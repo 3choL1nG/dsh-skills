@@ -644,7 +644,9 @@ function remoteAhead(root) {
  *  清单文件是"生成物"，两边各生成一份必然会撞车，所以这里直接重做一份；
  *  真技能文件两边都改了才交给人处理。 */
 async function mergeRemote(root) {
-  const pull = git(['pull', '--no-rebase', '--no-edit', '--autostash'], { root });
+  // --allow-unrelated-histories：万一 GitHub 上建仓库时勾了 "Add a README"，
+  // 两边历史没有共同祖先，默认会拒绝合并；加上这个参数就能正常合。
+  const pull = git(['pull', '--no-rebase', '--no-edit', '--autostash', '--allow-unrelated-histories'], { root });
   if (pull.code === 0) return { ok: true, output: pull.stdout };
   const conflicts = git(['diff', '--name-only', '--diff-filter=U'], { root }).stdout
     .split(/\r?\n/).filter(Boolean);
@@ -1004,8 +1006,8 @@ async function actionPull() {
   const before = unitList(skillsRoot);
   // 还没建立上游时（比如刚 clone 完别人推的分支），直接用显式分支名拉
   const pullArgs = upstream.code === 0
-    ? ['pull', '--no-rebase', '--no-edit', '--autostash']
-    : ['pull', '--no-rebase', '--no-edit', '--autostash', 'origin', s.branch || 'main'];
+    ? ['pull', '--no-rebase', '--no-edit', '--autostash', '--allow-unrelated-histories']
+    : ['pull', '--no-rebase', '--no-edit', '--autostash', '--allow-unrelated-histories', 'origin', s.branch || 'main'];
   const pull = git(pullArgs, { root });
   if (pull.code !== 0) {
     const conflicts = git(['diff', '--name-only', '--diff-filter=U'], { root }).stdout.split(/\r?\n/).filter(Boolean);
