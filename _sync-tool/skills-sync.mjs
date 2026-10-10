@@ -413,6 +413,14 @@ async function actionLink() {
   const existing = linkTarget(live);
   if (existing && existing !== '') {
     ok(`技能目录已经是链接，指向 ${existing}，不用再搬。`);
+    // 以链接为准：万一设置文件里的同步文件夹记错了（比如换过位置、或上一次没跑完），
+    // 这里按"链接指向哪个仓库子目录"反推出真正的同步文件夹，免得后面步骤全走偏。
+    const impliedRoot = path.dirname(existing);
+    if (impliedRoot && path.resolve(impliedRoot) !== path.resolve(root)) {
+      info(`同步文件夹按链接修正为：${impliedRoot}`);
+      saveSettings({ root: impliedRoot });
+      return;
+    }
     saveSettings({ root });
     return;
   }
