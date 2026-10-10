@@ -34,13 +34,18 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const TOOL_DIR = path.dirname(fileURLToPath(import.meta.url));
-// 工具的设置文件：平时跟脚本放一起（所以从哪份脚本启动就用哪份设置）；
-// 但如果显式给了 --home（多半是自动化测试），就写进那个假 home 里，
-// 免得测试把真机设置冲掉。
+// 工具的设置文件：正常情况下就在脚本旁边（仓库里的 _sync-tool/settings.json）。
+// 但如果从别的地方启动了同一份脚本（比如开发目录），就直接用仓库里那一份，
+// 免得出现"两份设置各记各的"。
+// 显式给了 --home（自动化测试）时写进那个假 home，绝不碰真机设置。
 function settingsFile() {
   if (args.settings) return String(args.settings);
   if (args.home) return path.join(args.home, '.dsh-sync-settings.json');
-  return path.join(TOOL_DIR, 'settings.json');
+  const local = path.join(TOOL_DIR, 'settings.json');
+  if (fs.existsSync(local)) return local;
+  const inRepo = path.join(UNITS.skills.defaultRoot, TOOL_SUBDIR, 'settings.json');
+  if (fs.existsSync(inRepo)) return inRepo;
+  return local;
 }
 const IS_WIN = process.platform === 'win32';
 const HOME = os.homedir();
