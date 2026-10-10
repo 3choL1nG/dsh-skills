@@ -30,6 +30,8 @@
 ## 二、带用户做的 5 步（每步做完验证一次）
 
 1. **查环境**
+   - **先确认这台 Mac 已经装了 DSH**：`ls ~/.dsh` 里有东西（会有 `AGENTS.md`、`dsh-runtimes` 这些）。
+     没有就先装好 DSH、打开一次，再回来做这 5 步 —— 否则后面技能和规则没地方生效。
    - `git --version`：没有会弹出"安装命令行工具"窗口 → 点安装；或跑 `xcode-select --install`
    - `node -v`：没有也不要紧（接管脚本会自己去找 DSH 自带的 Node；实在没有就 `brew install node`）
 2. **克隆两份仓库**
