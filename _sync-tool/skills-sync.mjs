@@ -1145,6 +1145,127 @@ async function actionPull() {
 
 // ───────────────────────────────────────────────────────── 换新设备：克隆
 
+// ───────────────────────────────────────────────────────── 全局规则（~/.dsh/AGENTS.md）
+
+const RULES_START = '<!-- DSH知识库规则:start -->';
+const RULES_END = '<!-- DSH知识库规则:end -->';
+
+/** DSH 的全局指令文件：新开的对话框都会读它 */
+function agentsFilePath() {
+  if (args.home) return path.join(args.home, '.dsh', 'AGENTS.md');       // 测试用：显式指定
+  return path.join(process.env.DSH_HOME || path.join(HOME, '.dsh'), 'AGENTS.md');
+}
+
+/** 技能库同步文件夹（工具本体住在那边，跟当前单元无关） */
+function skillsRootDir() {
+  return (loadSettings().skills || {}).root || UNITS.skills.defaultRoot;
+}
+
+/** 要写进 AGENTS.md 的知识库规则。路径按本机实际情况生成，Mac 上自动变成 ~/ 那种。 */
+function kbRulesText() {
+  const kb = UNITS.kb.live();
+  const kbRoot = (loadSettings().kb || {}).root || UNITS.kb.defaultRoot;
+  const tool = path.join(skillsRootDir(), TOOL_SUBDIR);
+  const pyCmd = IS_WIN ? 'python' : 'python3';
+  const readTool = `${pyCmd} "${path.join(tool, '归档读文件.py')}"`;
+  const syncTool = `node "${path.join(tool, 'skills-sync.mjs')}"`;
+  const inbox = path.join(kb, '_inbox');
+  return [
+    RULES_START,
+    '## 我的知识库（云端同步，两台设备都有）',
+    '',
+    `位置：\`${kb}\`。它是同步仓库的链接（真实内容在 \`${path.join(kbRoot, UNITS.kb.sub)}\`），`,
+    '另一台推过之后用【拉取更新】(5) 就同步了。',
+    '',
+    '### 取用（三步，别跳）',
+    `1. 先读 \`${path.join(kb, 'INDEX.md')}\` 拿到子库导航；`,
+    '2. 进对应子库读 `_说明.md`（每个文件干什么用）和 `_清单.md`（文件清单、大小、有没有写说明）；',
+    '3. 最后才读具体文件。',
+    '**不要全量扫描该目录**（文件可能上万，扫一遍又慢又抓不住重点）。',
+    '',
+    '### 归档（用户只把文件拖进收件箱，其余全是你的活）',
+    `用户说"归档收件箱 / 归档 / 收件箱"，或者你发现 \`${inbox}\` 里有文件时，`,
+    '主动做完这 5 步，**不要让用户去填任何说明或表格**：',
+    '1. **读内容**：先跑一遍现成的助手（跨平台都跟着技能库走）：',
+    `   \`${readTool} "<文件路径>"\``,
+    '   它会打印页数 / 每页标题 / 主题色 / 字体 / 段落 / 表格。需要更细的内容（版式、图表、备注）',
+    '   再用 office-pptx / office-docx / office-xlsx 技能。图片直接用 read_image 看。',
+    '   要拿到：主题、风格与配色、页数或结构、关键文字、适合什么场合。',
+    '2. **判断子库**：模板→`02-模板/`；范文→`04-公文范文/`；视觉规则→`01-视觉规范/`；',
+    '   图片数据→`05-素材/`；我们做过的成品→`03-产出/`；方法经验→`06-方法论/`。',
+    '   **拿不准就问用户一句，别猜、别乱放。**',
+    '3. **移动**过去（不要复制留副本）。有意义的文件名可加日期前缀，别把名字改得认不出来。',
+    '4. **在目标子库的 `_说明.md` 里加一行**，格式：',
+    '   ``- `文件名`：什么风格 / 什么结构 / 什么时候该用它``',
+    '5. **刷新清单**并收尾：',
+    `   \`${syncTool} catalog --unit kb --yes\``,
+    '   然后给用户一张表：**文件 → 去了哪 → 说明写了什么**，最后问一句要不要顺手【保存并上传】(4)。',
+    '',
+    '### 注意',
+    '- `_private/`（不公开的文件）和 `_work/`（临时/大文件）是本地专属区，不上传、也不当参考资料。',
+    '- `_清单.md` 里标着"（还没写说明）"的文件没人登记过：用之前先问用户，或补一句说明。',
+    '- `03-产出/` 里的数字多为示例，不要当真实数据引用。',
+    '- 知识库是**公开仓库**：用户说不能公开的东西要放 `_private/`，别直接放子库。',
+    '',
+    '适用场景：做 PPT、写公文、文档排版、做设计方向等任何可能需要参考过往模板、',
+    '视觉规范、公文范文、素材或历史产出的任务。',
+    RULES_END,
+  ].join('\n');
+}
+
+/** 只替换我们标记的那一段，文件里其它内容一个字节都不动 */
+function installRules() {
+  const file = agentsFilePath();
+  const want = kbRulesText();
+  let old = '';
+  let exists = false;
+  try { old = fs.readFileSync(file, 'utf8'); exists = true; } catch { /* 还没有这个文件 */ }
+
+  const hasStart = old.includes(RULES_START);
+  const hasEnd = old.includes(RULES_END);
+  if (hasStart !== hasEnd) {
+    return { ok: false, file, error: `文件里只找到一半标记，为安全起见没动手（手工看一下 ${file}）` };
+  }
+
+  let next;
+  let mode;
+  if (hasStart && hasEnd) {
+    next = `${old.slice(0, old.indexOf(RULES_START))}${want}${old.slice(old.indexOf(RULES_END) + RULES_END.length)}`;
+    mode = 'replaced';
+  } else {
+    const sep = old.trim() === '' ? '' : (old.endsWith('\n') ? '\n' : '\n\n');
+    next = `${old}${sep}${want}\n`;
+    mode = 'appended';
+  }
+  if (next === old) return { ok: true, file, changed: false, mode };
+
+  if (exists) {
+    try { fs.writeFileSync(`${file}.bak`, old, 'utf8'); } catch { /* 备份失败不影响主流程 */ }
+  }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, next, 'utf8');
+  const backedUp = exists && fs.existsSync(`${file}.bak`);
+  return { ok: true, file, changed: true, mode, backedUp, created: !exists };
+}
+
+/** 单跑：把规则装进 / 刷新到 AGENTS.md */
+async function actionRules() {
+  head('安装 / 刷新知识库规则（写进 DSH 的全局指令文件）');
+  const file = agentsFilePath();
+  say(field('目标文件', file));
+  say();
+  info('作用：以后**任何新开的对话框**都会知道"归档收件箱"该怎么处理，不用你解释。');
+  info('只会动我们标记的那一段（<!-- DSH知识库规则:start --> … end），你自己的内容一个字节都不碰。');
+  const go = await ask('写进去吗？(y/n)', 'y');
+  if (go.toLowerCase() !== 'y') { info('已取消，没有改动任何文件。'); return; }
+  const r = installRules();
+  if (!r.ok) { bad(`没写成：${r.error}`); return; }
+  if (!r.changed) { ok('规则已经是最新的，文件没动。'); return; }
+  ok(`${r.created ? '已创建并写入' : r.mode === 'replaced' ? '已就地更新' : '已追加写入'}：${file}`);
+  if (r.backedUp) info(`改动前的版本备份在：${file}.bak`);
+  info('验证方式：新开一个对话框，问"我的知识库在哪、收件箱是干什么的"。');
+}
+
 async function actionClone(urlArg, rootArg) {
   head('换新设备：把技能库克隆到本机并接管');
   const url = urlArg || (await ask('技能库的 GitHub 地址（https://…/dsh-skills.git）', unitSettings().remote || ''));
@@ -1251,6 +1372,26 @@ async function actionClone(urlArg, rootArg) {
   if (unit().catalogMode === 'skills') info('重开一次 DSH，技能就能用了。');
   else info(`${unit().label}已经在 ${live}，直接打开就能用。`);
   info(`以后改完${unit().label}：【保存并上传】（菜单 4）；换回另一台前先在那台【拉取更新】。`);
+
+  // 知识库：顺手把"归档收件箱"规则装进 DSH 的全局指令文件，
+  // 这样这台机器上新开的对话框也会知道该怎么归档（Mac 首次接管时最需要）
+  if (unit().key === 'kb') {
+    say();
+    const file = agentsFilePath();
+    info(`还有一件事：把知识库规则装进 ${file}，新开的对话框才知道"归档收件箱"要做什么。`);
+    const go = await ask('要装吗？(y/n)', 'y');
+    if (go.toLowerCase() !== 'y') {
+      info(`跳过。以后想装：node "${path.join(skillsRootDir(), TOOL_SUBDIR, 'skills-sync.mjs')}" rules --unit kb`);
+    } else {
+      const r = installRules();
+      if (!r.ok) warn(`规则没写成（${r.error}），不影响知识库本身。`);
+      else if (!r.changed) ok('规则已经是最新的，文件没动。');
+      else {
+        ok(`规则已写入：${file}${r.mode === 'replaced' ? '（只替换了标记的那一段）' : ''}`);
+        if (r.backedUp) info(`改动前的版本备份在：${file}.bak`);
+      }
+    }
+  }
 }
 
 // ───────────────────────────────────────────────────────── 技能清单 SKILLS.md
@@ -1550,6 +1691,8 @@ function usage() {
   say('    node skills-sync.mjs pull                       日常：拉取更新');
   say('    node skills-sync.mjs catalog                    生成清单（知识库=刷新 _清单.md）');
   say('    node skills-sync.mjs clone --url <仓库地址> [--root <目录>]   换新设备');
+  say('    node skills-sync.mjs rules --unit kb            把知识库规则装进 ~/.dsh/AGENTS.md');
+  say('                                                    （第 8 步会自动问你要不要装）');
   say('');
   say('  可选参数：--unit kb  --root <同步文件夹>  --home <用户目录>');
   say('            --skills-dir <技能目录>   --kb-dir <知识库目录>');
@@ -1577,6 +1720,7 @@ async function main() {
     case 'pull': await actionPull(); break;
     case 'catalog': await actionCatalog(false); break;
     case 'clone': await actionClone(typeof args.url === 'string' ? args.url : '', typeof args.root === 'string' ? args.root : ''); break;
+    case 'rules': await actionRules(); break;
     default: usage();
   }
 }
