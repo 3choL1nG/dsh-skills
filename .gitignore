@@ -1,0 +1,15 @@
+# OS junk files
+.DS_Store
+Thumbs.db
+desktop.ini
+*.tmp
+
+# never publish real credentials: some skills keep keys in a local .env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# per-machine settings of the sync tool (never share)
+_sync-tool/settings.json

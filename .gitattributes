@@ -1,0 +1,3 @@
+# Keep bytes identical on every OS: never convert line endings.
+# (skills are plain text + scripts; Windows and macOS must agree byte for byte)
+* -text
