@@ -1070,7 +1070,8 @@ function copyToolIntoRepo(root) {
   if (!unit().shipsTool) return;   // 知识库仓库不带工具（工具跟着技能库走，只留一份）
   const dest = path.join(root, TOOL_SUBDIR);
   fs.mkdirSync(dest, { recursive: true });
-  const files = fs.readdirSync(TOOL_DIR).filter((f) => f === 'skills-sync.mjs' || f.endsWith('.cmd') || f.endsWith('.command'));
+  // 工具本体 + 启动器 + 归档读文件助手（.py）一起跟着技能库走，Mac 上也能用同一套
+  const files = fs.readdirSync(TOOL_DIR).filter((f) => f === 'skills-sync.mjs' || f.endsWith('.cmd') || f.endsWith('.command') || f.endsWith('.py'));
   for (const f of files) {
     const src = path.join(TOOL_DIR, f);
     if (!fs.statSync(src).isFile()) continue;
