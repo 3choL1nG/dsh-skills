@@ -360,6 +360,13 @@ async function actionStatus() {
       ? fs.readdirSync(scanDir, { withFileTypes: true }).filter((d) => d.isDirectory() && !d.name.startsWith('.') && d.name !== '_private' && d.name !== '_work').length
       : 0;
     say(field('实际内容', `${st.files} 个文件，${human(st.bytes)}，${subs} 个子库`));
+    const pendingBox = inboxPending(scanDir);
+    if (pendingBox.length > 0) {
+      say(field('收件箱', `${pendingBox.length} 个文件还没归档`));
+      say(`  → 对 AI 说一句"归档收件箱"，它会读内容、归类、写好说明`);
+    } else {
+      say(field('收件箱', '空的（都归档了）'));
+    }
   }
   say(field('同步文件夹', `${s.root}${s.rootExists ? '' : '  (还不存在)'}`));
   say(field('Git 仓库', s.isRepo ? '已建立' : '还没有'));
@@ -711,6 +718,25 @@ function unitSummary(dir) {
   return `本机现在一共 ${st.files} 个文件，${human(st.bytes)}`;
 }
 
+/** 知识库收件箱里还没归档的文件（_说明.md / _清单.md 不算）。返回相对路径列表。 */
+function inboxPending(dir) {
+  const box = path.join(dir, '_inbox');
+  const out = [];
+  if (!fs.existsSync(box)) return out;
+  const stack = [box];
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    let entries = [];
+    try { entries = fs.readdirSync(cur, { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      const p = path.join(cur, e.name);
+      if (e.isDirectory()) stack.push(p);
+      else if (e.isFile() && e.name !== '_说明.md' && e.name !== '_清单.md') out.push(path.relative(dir, p));
+    }
+  }
+  return out.sort();
+}
+
 /** 刷新清单：技能库 = 重建 SKILLS.md；知识库 = 刷新各子库的 _清单.md */
 async function refreshCatalog(silent = true) {
   if (unit().catalogMode === 'skills') return actionCatalog(silent);
@@ -875,6 +901,15 @@ async function actionPush(firstTime = false) {
   writeRepoFiles(root);
   copyToolIntoRepo(root);
   await refreshCatalog(true);
+
+  if (unit().key === 'kb') {
+    const box = inboxPending(path.join(root, unit().sub));
+    if (box.length > 0) {
+      warn(`收件箱里还有 ${box.length} 个文件没归档：${shortList(box, 3)}`);
+      info('先对 AI 说一句"归档收件箱"（它读内容、归类、写好用途说明），再回来按 4。');
+      info('继续上传也行，但没有说明的文件 AI 以后找不到它们。');
+    }
+  }
 
   const stats = walkStats(path.join(root, unit().sub));
   info(`${unit().dirLabel}：${stats.files} 个文件，${human(stats.bytes)}`);
