@@ -27,7 +27,23 @@ path = sys.argv[1]
 ext = os.path.splitext(path)[1].lower()
 print(f"文件: {os.path.basename(path)}  ({round(os.path.getsize(path) / 1024, 1)} KB)")
 
+
+def need(module, hint):
+    """检查依赖库。缺了就给一句能照着做的提示，别把 traceback 丢给用户。"""
+    try:
+        __import__(module)
+    except ImportError:
+        print()
+        print(f"[缺少依赖] 这台机器没装 {module}。两种办法：")
+        print(f"  1) 装一下：{hint}")
+        print("     （Mac/Linux 一次性装全：pip3 install --user python-pptx python-docx openpyxl）")
+        print("  2) 或者改用技能来读：office-pptx / office-docx / office-xlsx（它们自带 Python 环境）")
+        print()
+        sys.exit(2)
+
+
 if ext == ".pptx":
+    need("pptx", "pip install python-pptx")
     from pptx import Presentation
     p = Presentation(path)
     ratio = p.slide_width / p.slide_height
@@ -55,6 +71,7 @@ if ext == ".pptx":
         print("主题  : 读不到（", e, "）")
 
 elif ext == ".docx":
+    need("docx", "pip install python-docx")
     from docx import Document
     d = Document(path)
     paras = [x.text.strip() for x in d.paragraphs if x.text.strip()]
@@ -69,6 +86,7 @@ elif ext == ".docx":
         print(f"    表{i}: {rows} 行    首行: {head}")
 
 elif ext == ".xlsx":
+    need("openpyxl", "pip install openpyxl")
     from openpyxl import load_workbook
     wb = load_workbook(path, data_only=True)
     print(f"类型: XLSX   工作表: {wb.sheetnames}")
