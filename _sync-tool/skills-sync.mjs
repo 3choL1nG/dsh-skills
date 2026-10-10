@@ -420,7 +420,7 @@ async function actionLink() {
     if (unit().key === 'kb') {
       // 知识库目录还不存在（新设备/刚删过）：直接建好并接管，内容以后往里放
       fs.mkdirSync(target, { recursive: true });
-      fs.mkdirSync(path.dirname(live), { recursive: true });
+      ensureParentDir(live);
       const linked = makeLink(target, live);
       if (!linked.ok) { bad(`建链接失败：${linked.error}`); info(linked.hint); return; }
       ok(`已建好同步文件夹：${root}`);
@@ -445,7 +445,7 @@ async function actionLink() {
   const go = await ask('开始搬家？(y/n)', 'y');
   if (go.toLowerCase() !== 'y') { info('已取消。'); return; }
 
-  fs.mkdirSync(path.dirname(target), { recursive: true });
+  ensureParentDir(target);
   if (fs.existsSync(target)) {
     const destStats = walkStats(target);
     if (destStats.files > 0) {
@@ -472,7 +472,7 @@ async function actionLink() {
   }
   ok(`搬家完成：${after.files} 个文件，${human(after.bytes)}`);
 
-  fs.mkdirSync(path.dirname(live), { recursive: true });
+  ensureParentDir(live);
   const linked = makeLink(target, live);
   if (!linked.ok) {
     bad(`建链接失败：${linked.error}`);
@@ -492,6 +492,16 @@ async function actionLink() {
   say();
   ok(`同步文件夹记下了：${root}`);
   info('接下来做第 2 步：连接 GitHub（菜单选 2）');
+}
+
+/** 需要时创建上级目录。
+ *  坑：D:\KB 的上级是盘符根目录 D:\ 本身，绝不能去 mkdir 它（会 EPERM 失败）。
+ *  知识库默认就在 D:\KB，所以这行必须判断"父目录已存在就跳过"。 */
+function ensureParentDir(p) {
+  const parent = path.dirname(p);
+  if (parent && parent !== p && parent !== path.parse(p).root && !fs.existsSync(parent)) {
+    fs.mkdirSync(parent, { recursive: true });
+  }
 }
 
 function moveDir(from, to) {
@@ -1116,7 +1126,7 @@ async function actionClone(urlArg, rootArg) {
     if (!linked.ok) { bad(`建链接失败：${linked.error}`); info(linked.hint); return; }
     ok(`链接已建立：${live}  ->  ${target}`);
   } else {
-    fs.mkdirSync(path.dirname(live), { recursive: true });
+    ensureParentDir(live);
     const linked = makeLink(target, live);
     if (!linked.ok) { bad(`建链接失败：${linked.error}`); info(linked.hint); return; }
     ok(`链接已建立：${live}  ->  ${target}`);
