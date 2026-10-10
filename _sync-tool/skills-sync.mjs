@@ -1,22 +1,29 @@
 #!/usr/bin/env node
 /**
- * DSH 技能同步助手（Windows / macOS / Linux 通用）
+ * DSH 云同步助手（Windows / macOS / Linux 通用）
  * ---------------------------------------------------------------
- * 作用：把你下载的 skill 放进一个 Git 仓库，用 GitHub 做云备份，
- *       另一台设备 clone 一次就能用同一套 skill。
+ * 同一个工具管两套东西，互不干扰：
  *
- * 它只管一个目录：~/.agents/skills （Windows: C:\Users\你\.agents\skills）
- * 做法：把这个目录搬进 <同步文件夹>/skills，然后在原位置建一个"链接"指回去。
- *       DSH 完全察觉不到，照常读技能；Git 同步的是同步文件夹里的真实文件。
+ *   ① 技能库（默认，--unit 省略）
+ *      目录：~/.agents/skills（Windows: C:\Users\你\.agents\skills）
+ *      做法：把这个目录搬进 <同步文件夹>/skills，原位置留一个"链接"指回去。
+ *            DSH 察觉不到，照常读技能；Git 同步的是同步文件夹里的真实文件。
+ *      清单：SKILLS.md（每次自动重建）
  *
- * 日常只有两件事：改完技能【保存并上传】，换设备前【拉取更新】。
+ *   ② 知识库（--unit kb）
+ *      目录：D:\KB（Windows）/ ~/KB（macOS）
+ *      做法：同上，搬进 <同步文件夹>/kb，原位置留链接。
+ *      清单：INDEX.md 由你自己维护（全局导航表）；子库里的 _清单.md 由工具刷新。
+ *      注意：_private/ 和 _work/ 两个子目录永远不上传（放敏感或临时文件用）。
  *
- * 多端规则（并集）：你在 Windows 上装了 A、B、C，在 Mac 上装了 B、D，
- * 同步完成后两边都会变成 A、B、C、D，SKILLS.md 也按并集重新生成。
- * 只有"两台设备改了同一个技能的同一些内容"才会需要你手工挑一下。
+ * 日常只有两件事：改完东西【保存并上传】，换设备前【拉取更新】。
  *
- * 直接双击 同步助手.cmd（Windows）或 同步助手.command（macOS）即可，
- * 也可以命令行：node skills-sync.mjs
+ * 多端规则（并集）：Windows 上装了 A、B、C，Mac 上装了 B、D，
+ * 同步完成后两边都会变成 A、B、C、D，清单也按并集重新生成。
+ * 只有"两台设备改了同一个文件"才会需要你手工挑一下。
+ *
+ * 直接双击 同步助手.cmd / 知识库助手.cmd（macOS 是 .command），
+ * 也可以命令行：node skills-sync.mjs [--unit kb]
  */
 
 import fs from 'node:fs';
@@ -35,22 +42,84 @@ const USER = (() => {
   try { return os.userInfo().username; } catch { return process.env.USERNAME || process.env.USER || 'user'; }
 })();
 
-const DEFAULT_ROOT = IS_WIN ? 'D:\\DSH-Skills' : path.join(HOME, 'DSH-Skills');
-const REPO_SUBDIR = 'skills';        // 技能本体在这个子目录里
-const TOOL_SUBDIR = '_sync-tool';    // 本工具自己也会复制一份进仓库，方便 Mac 端直接用
-const CATALOG_NAME = 'SKILLS.md';
+const TOOL_SUBDIR = '_sync-tool';    // 本工具自己也会复制一份进技能库，方便 Mac 端直接用
+
+// ───────────────────────────────────────────────────────── 两套"同步单元"（技能库 / 知识库）
+// 逻辑完全一样，只是目录、仓库子目录、清单形式不同。--unit kb 切到知识库。
+
+const UNITS = {
+  skills: {
+    key: 'skills',
+    label: '技能',
+    dirLabel: '技能目录',
+    catalogName: 'SKILLS.md',
+    catalogMode: 'skills',            // 自动生成技能清单
+    sub: 'skills',                    // 仓库里的子目录
+    shipsTool: true,                  // 仓库里带一份本工具
+    defaultRoot: IS_WIN ? 'D:\\DSH-Skills' : path.join(HOME, 'DSH-Skills'),
+    live: () => args['skills-dir'] || path.join(args.home || HOME, '.agents', 'skills'),
+  },
+  kb: {
+    key: 'kb',
+    label: '知识库',
+    dirLabel: '知识库目录',
+    catalogName: 'INDEX.md',
+    catalogMode: 'inventory',         // 刷新各子库的 _清单.md，INDEX.md 由人维护
+    sub: 'kb',
+    shipsTool: false,
+    defaultRoot: IS_WIN ? 'D:\\KB-Sync' : path.join(HOME, 'KB-Sync'),
+    live: () => args['kb-dir'] || (IS_WIN ? 'D:\\KB' : path.join(HOME, 'KB')),
+  },
+};
+
+function unit() { return UNITS[args.unit === 'kb' ? 'kb' : 'skills']; }
+
+// 知识库模式下把提示语里的"技能"自动换成"知识库/内容"，这样同一套逻辑两边都读得通
+const KB_WORDS = [
+  ['把技能搬进', '把知识库搬进'],
+  ['克隆技能库并接管', '克隆知识库并接管'],
+  ['技能库的 GitHub 地址（https://…/dsh-skills.git）', '知识库的 GitHub 地址（https://…/dsh-kb.git）'],
+  ['技能目录', '知识库目录'],
+  ['技能库', '知识库'],
+  ['技能清单', '文件清单'],
+  ['SKILLS.md', '各子库 _清单.md'],
+  ['改完技能就', '改完内容就'],
+  ['技能现在一共', '文件现在一共'],
+  ['个技能', '个文件'],
+  ['这些技能', '这些文件'],
+  ['技能就能用了', '内容就能用了'],
+  ['技能有变化', '内容有变化'],
+  ['技能和上次一样', '内容和上次一样'],
+  ['扫描技能列表', '重新扫描目录'],
+  ['把本机已有的技能', '把本机已有的内容'],
+  ['技能', '内容'],
+];
+function tr(text) {
+  if (unit().key !== 'kb') return text;
+  let out = String(text);
+  for (const [from, to] of KB_WORDS) out = out.split(from).join(to);
+  return out;
+}
 
 // ───────────────────────────────────────────────────────── 输出（纯文本，不用颜色，避免老终端乱码）
 
 const LINE = '='.repeat(60);
 const THIN = '-'.repeat(60);
 
-function say(text = '') { console.log(text); }
+function say(text = '') { console.log(tr(text)); }
 function head(title) { say(); say(LINE); say(`  ${title}`); say(LINE); }
 function ok(text) { say(`  [OK] ${text}`); }
 function warn(text) { say(`  [注意] ${text}`); }
 function bad(text) { say(`  [失败] ${text}`); }
 function info(text) { say(`  - ${text}`); }
+
+/** 中文算两个字符宽，用来把冒号对齐（纯排版，不影响逻辑） */
+function visualWidth(text) {
+  return [...String(text)].reduce((n, ch) => n + (/[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]/.test(ch) ? 2 : 1), 0);
+}
+function field(label, value, width = 14) {
+  return `  ${label}${' '.repeat(Math.max(0, width - visualWidth(label)))}: ${value}`;
+}
 function pause(text = '按回车继续…') { return ask(text, ''); }
 
 function ask(question, def = '') {
@@ -73,6 +142,13 @@ function human(bytes) {
   if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${bytes} B`;
+}
+
+/** 名单太长时只列前几个，避免刷屏 */
+function shortList(items, max = 8) {
+  const list = items || [];
+  if (list.length <= max) return list.join('、');
+  return `${list.slice(0, max).join('、')} 等 ${list.length} 个`;
 }
 
 // ───────────────────────────────────────────────────────── 运行外部命令
@@ -130,19 +206,34 @@ function gitOk(cmdArgs, opts = {}) {
 // ───────────────────────────────────────────────────────── 设置 + 现状
 
 function loadSettings() {
-  try { return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); } catch { return {}; }
+  try {
+    const raw = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) || {};
+    // 老版本是扁平的 { root, remote }（那时候只有技能库），自动搬进 skills 这一栏
+    if (raw.root && !raw.skills) {
+      raw.skills = {
+        root: raw.root, remote: raw.remote || '',
+        remoteEmail: raw.remoteEmail || '', lastPush: raw.lastPush || '',
+      };
+      delete raw.root; delete raw.remote; delete raw.remoteEmail; delete raw.lastPush;
+    }
+    return raw;
+  } catch { return {}; }
 }
+/** 当前单元自己的设置（技能库和知识库各存各的） */
+function unitSettings() { return loadSettings()[unit().key] || {}; }
 function saveSettings(patch) {
-  const next = { ...loadSettings(), ...patch };
-  fs.writeFileSync(SETTINGS_FILE, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-  return next;
+  const all = loadSettings();
+  all[unit().key] = { ...(all[unit().key] || {}), ...patch };
+  fs.writeFileSync(SETTINGS_FILE, `${JSON.stringify(all, null, 2)}\n`, 'utf8');
+  return all[unit().key];
 }
 
-function skillsDirPath() {
-  return args['skills-dir'] || path.join(args.home || HOME, '.agents', 'skills');
+/** 当前单元在系统里的真实目录（技能目录 / 知识库目录） */
+function livePath() {
+  return unit().live();
 }
 function syncRoot() {
-  return args.root || loadSettings().root || DEFAULT_ROOT;
+  return args.root || unitSettings().root || unit().defaultRoot;
 }
 
 /** 目录是否是"链接"（Windows 的 junction 在 Node 里也算 symlink，但读法不同） */
@@ -232,8 +323,8 @@ function gitState() {
     lastCommit: '',
     dirty: false,
     aheadBehind: '',
-    skillsRoot: path.join(root, REPO_SUBDIR),
-    link: linkTarget(skillsDirPath()),
+    skillsRoot: path.join(root, unit().sub),
+    link: linkTarget(livePath()),
   };
   if (state.isRepo) {
     state.remote = git(['remote', 'get-url', 'origin'], { root }).stdout || '';
@@ -251,19 +342,28 @@ function gitState() {
 
 async function actionStatus() {
   const s = gitState();
-  // 技能数量按"DSH 真正看到的那个目录"统计：没接管时是真实目录，接管后是链接（内容一样）
-  const skills = scanSkills(fs.existsSync(s.skillsRoot) ? s.skillsRoot : skillsDirPath());
-  const liveSkillsDirPath = skillsDirPath();
+  // 按"你真正看到的那个目录"统计：没接管时是真实目录，接管后是链接（内容一样）
+  const live = livePath();
+  const scanDir = fs.existsSync(s.skillsRoot) ? s.skillsRoot : live;
+  const skills = scanSkills(scanDir);
   head('现在的情况');
-  say(`  本机          : ${HOST} (${process.platform})`);
-  say(`  技能目录      : ${liveSkillsDirPath}`);
+  say(field('本机', `${HOST} (${process.platform})`));
+  say(field(unit().dirLabel, live));
   if (s.link === null) say('                  -> 不存在');
   else if (s.link === '') say('                  -> 真实目录（还没被接管）');
   else say(`                  -> 链接到 ${s.link}`);
-  say(`  实际技能      : ${skills.list.length} 个，${skills.list.reduce((n, x) => n + x.files, 0)} 个文件，${human(skills.list.reduce((n, x) => n + x.bytes, 0))}`);
-  say(`  同步文件夹    : ${s.root}${s.rootExists ? '' : '  (还不存在)'}`);
-  say(`  Git 仓库      : ${s.isRepo ? '已建立' : '还没有'}`);
-  say(`  同步仓库地址  : ${s.remote || '还没设置'}`);
+  if (unit().catalogMode === 'skills') {
+    say(field('实际技能', `${skills.list.length} 个，${skills.list.reduce((n, x) => n + x.files, 0)} 个文件，${human(skills.list.reduce((n, x) => n + x.bytes, 0))}`));
+  } else {
+    const st = walkStats(scanDir);
+    const subs = fs.existsSync(scanDir)
+      ? fs.readdirSync(scanDir, { withFileTypes: true }).filter((d) => d.isDirectory() && !d.name.startsWith('.') && d.name !== '_private' && d.name !== '_work').length
+      : 0;
+    say(field('实际内容', `${st.files} 个文件，${human(st.bytes)}，${subs} 个子库`));
+  }
+  say(field('同步文件夹', `${s.root}${s.rootExists ? '' : '  (还不存在)'}`));
+  say(field('Git 仓库', s.isRepo ? '已建立' : '还没有'));
+  say(field('同步仓库地址', s.remote || '还没设置'));
   const gitVer = GIT ? run(GIT, ['--version']).stdout : '';
   const gitLine = !GIT ? '未找到，请先安装 git'
     : (gitVer || '找到了但没法执行（例如在 DSH 的沙箱终端里跑）');
@@ -286,7 +386,7 @@ async function actionStatus() {
 async function nextStepText(plain = false) {
   const s = {
     root: syncRoot(),
-    link: linkTarget(skillsDirPath()),
+    link: linkTarget(livePath()),
   };
   s.rootExists = fs.existsSync(s.root);
   s.isRepo = fs.existsSync(path.join(s.root, '.git'));
@@ -306,9 +406,9 @@ async function nextStepText(plain = false) {
 
 async function actionLink() {
   head('第 1 步：把技能搬进同步文件夹并接管');
-  const live = skillsDirPath();
+  const live = livePath();
   const root = syncRoot();
-  const target = path.join(root, REPO_SUBDIR);
+  const target = path.join(root, unit().sub);
 
   const existing = linkTarget(live);
   if (existing && existing !== '') {
@@ -317,6 +417,18 @@ async function actionLink() {
     return;
   }
   if (!fs.existsSync(live)) {
+    if (unit().key === 'kb') {
+      // 知识库目录还不存在（新设备/刚删过）：直接建好并接管，内容以后往里放
+      fs.mkdirSync(target, { recursive: true });
+      fs.mkdirSync(path.dirname(live), { recursive: true });
+      const linked = makeLink(target, live);
+      if (!linked.ok) { bad(`建链接失败：${linked.error}`); info(linked.hint); return; }
+      ok(`已建好同步文件夹：${root}`);
+      ok(`链接已建立：${live}  ->  ${target}`);
+      saveSettings({ root });
+      info('接下来做第 2 步：连接 GitHub（菜单选 2）');
+      return;
+    }
     warn(`技能目录不存在：${live}`);
     info('说明你还没下载过技能。可以先把同步文件夹建好，技能以后再说。');
     fs.mkdirSync(target, { recursive: true });
@@ -433,7 +545,7 @@ async function actionRemote(urlArg) {
     ok('已建立 Git 仓库并写好配置文件');
   }
 
-  let url = urlArg || loadSettings().remote || '';
+  let url = urlArg || unitSettings().remote || '';
   if (!url) {
     say();
     say('  请先在浏览器里做 3 件事：');
@@ -537,11 +649,11 @@ async function mergeRemote(root) {
   const conflicts = git(['diff', '--name-only', '--diff-filter=U'], { root }).stdout
     .split(/\r?\n/).filter(Boolean);
   // 清单是生成物，任何人手改都没意义 —— 只要它冲突了就直接重做一份
-  if (conflicts.includes(CATALOG_NAME)) {
-    await actionCatalog(true);
-    git(['add', CATALOG_NAME], { root });
+  if (conflicts.includes(unit().catalogName)) {
+    await refreshCatalog(true);
+    git(['add', unit().catalogName], { root });
   }
-  const real = conflicts.filter((f) => f !== CATALOG_NAME);
+  const real = conflicts.filter((f) => f !== unit().catalogName);
   if (real.length > 0) return { ok: false, conflicts: real, output: pull.out };
   const done = git(['commit', '--no-edit'], { root });
   if (done.code !== 0) return { ok: false, conflicts: real, output: done.out };
@@ -560,57 +672,181 @@ function printConflictRecipe(root, conflicts) {
   info('（把冲突那几段发给我，我可以帮你合成一份。）');
 }
 
+/** 当前单元"有哪些组成部分"：技能库 = 技能名；知识库 = 子库名 */
+function unitList(dir) {
+  if (unit().catalogMode === 'skills') return skillNames(dir);
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && !d.name.startsWith('.') && d.name !== '_private' && d.name !== '_work')
+    .map((d) => d.name).sort();
+}
+
+/** 同一句话的两种说法：技能库报"几个技能 + 名单"，知识库报"几个文件 + 体积" */
+function unitSummary(dir) {
+  if (unit().catalogMode === 'skills') {
+    const names = skillNames(dir);
+    return `本机现在一共 ${names.length} 个技能：${names.join('、')}`;
+  }
+  const st = walkStats(dir);
+  return `本机现在一共 ${st.files} 个文件，${human(st.bytes)}`;
+}
+
+/** 刷新清单：技能库 = 重建 SKILLS.md；知识库 = 刷新各子库的 _清单.md */
+async function refreshCatalog(silent = true) {
+  if (unit().catalogMode === 'skills') return actionCatalog(silent);
+  return actionInventory(silent);
+}
+
+/** 知识库专用：把 from 里"目标没有的文件"复制进 to（并集），返回结果清单。
+ *  两边都有同名文件的**不动**，留给调用方备份，绝不覆盖。 */
+function mergeTreeInto(from, to) {
+  const added = [];
+  const both = [];
+  const walk = (srcDir, rel) => {
+    for (const e of fs.readdirSync(srcDir, { withFileTypes: true })) {
+      if (e.name === '.git') continue;
+      const src = path.join(srcDir, e.name);
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      const dst = path.join(to, r);
+      if (e.isDirectory()) {
+        fs.mkdirSync(dst, { recursive: true });
+        walk(src, r);
+      } else if (fs.existsSync(dst)) {
+        both.push(r);
+      } else {
+        fs.mkdirSync(path.dirname(dst), { recursive: true });
+        fs.copyFileSync(src, dst);
+        added.push(r);
+        try { fs.rmSync(src); } catch { /* 删不掉就留着，备份里还会有 */ }
+      }
+    }
+  };
+  walk(from, '');
+  return { added, both };
+}
+
 /** 写 .gitattributes / .gitignore（跨平台关键：禁止换行符转换）
  *  这两个文件刻意只用英文注释：它们是给 Git 看的配置文件，用英文能避免
  *  各种 Windows 工具按 GBK 误读出现乱码。 */
-const ATTRS_RULES = [
-  '# Keep bytes identical on every OS: never convert line endings.',
-  '# (skills are plain text + scripts; Windows and macOS must agree byte for byte)',
-  '* -text',
-  '# SKILLS.md is generated output: never let Git text-merge two versions,',
-  '# the tool always rebuilds it from the merged skill set instead.',
-  `${CATALOG_NAME} -merge`,
-  '',
-];
+/** 写 .gitattributes / .gitignore（跨平台关键：禁止换行符转换）
+ *  这两个文件刻意只用英文注释：它们是给 Git 看的配置文件，用英文能避免
+ *  各种 Windows 工具按 GBK 误读出现乱码。 */
+function attrsRules() {
+  const rules = [
+    '# Keep bytes identical on every OS: never convert line endings.',
+    '# (plain text, scripts and Office templates must agree byte for byte)',
+    '* -text',
+  ];
+  if (unit().catalogMode === 'skills') {
+    rules.push('# SKILLS.md is generated output: never let Git text-merge two versions,');
+    rules.push('# the tool always rebuilds it from the merged skill set instead.');
+    rules.push(`${unit().catalogName} -merge`);
+  }
+  return [...rules, ''];
+}
+
+function ignoreRules() {
+  const rules = [
+    '# OS junk files',
+    '.DS_Store',
+    'Thumbs.db',
+    'desktop.ini',
+    '*.tmp',
+    '',
+    '# never publish real credentials: some skills keep keys in a local .env',
+    '.env',
+    '.env.*',
+    '!.env.example',
+    '*.pem',
+    '*.key',
+    '',
+  ];
+  if (unit().key === 'kb') {
+    rules.push('# local-only areas: never uploaded — safe place for private files or scratch work');
+    rules.push('_private/');
+    rules.push('_work/');
+    rules.push('');
+  }
+  rules.push('# per-machine settings of the sync tool (never share)');
+  rules.push(`${TOOL_SUBDIR}/settings.json`);
+  rules.push('');
+  return rules;
+}
+
+/** 把缺失的规则补进已有文件（已有则不动，注释行不参与比对） */
+function upsertRules(file, rules) {
+  const want = rules.join('\n');
+  if (!fs.existsSync(file)) { fs.writeFileSync(file, want, 'utf8'); return; }
+  const have = fs.readFileSync(file, 'utf8');
+  const missing = rules.filter((line) => line.trim() && !line.startsWith('#') && !have.includes(line));
+  if (missing.length > 0) fs.writeFileSync(file, `${have.replace(/\s*$/, '')}\n${missing.join('\n')}\n`, 'utf8');
+}
 
 function writeRepoFiles(root) {
-  const attrs = path.join(root, '.gitattributes');
-  const want = ATTRS_RULES.join('\n');
-  if (!fs.existsSync(attrs)) {
-    fs.writeFileSync(attrs, want, 'utf8');
-  } else {
-    // 老仓库补齐规则（有则不动）
-    const have = fs.readFileSync(attrs, 'utf8');
-    const missing = ATTRS_RULES.filter((line) => line.trim() && !line.startsWith('#') && !have.includes(line));
-    if (missing.length > 0) fs.writeFileSync(attrs, `${have.replace(/\s*$/, '')}\n${missing.join('\n')}\n`, 'utf8');
-  }
-  const ignore = path.join(root, '.gitignore');
-  if (!fs.existsSync(ignore)) {
-    fs.writeFileSync(ignore, [
-      '# OS junk files',
-      '.DS_Store',
-      'Thumbs.db',
-      'desktop.ini',
-      '*.tmp',
-      '',
-      '# never publish real credentials: some skills keep keys in a local .env',
-      '.env',
-      '.env.*',
-      '!.env.example',
-      '*.pem',
-      '*.key',
-      '',
-      '# per-machine settings of the sync tool (never share)',
-      `${TOOL_SUBDIR}/settings.json`,
-      '',
-    ].join('\n'), 'utf8');
-  }
+  upsertRules(path.join(root, '.gitattributes'), attrsRules());
+  upsertRules(path.join(root, '.gitignore'), ignoreRules());
+  // 让 git 输出里的中文路径保持可读（默认会被转义成 \346\250\241 这种八进制，
+  // 那样脚本就没法按路径找到真实文件 —— 上传前检查就失效了）
+  if (fs.existsSync(path.join(root, '.git'))) git(['config', 'core.quotepath', 'false'], { root });
 }
 
 // ───────────────────────────────────────────────────────── 第 3 步：首次上传 / 日常保存
 
+// 上传前的安全检查：仓库可能是公开的，先把明显不该公开的东西拦下来
+const SECRET_NAME = /^(\.env.*|\.?id_(rsa|dsa|ecdsa|ed25519)|.*\.(pem|key|pfx|p12|keystore|ovpn))$/i;
+const SENSITIVE_WORD = /(涉密|机密|绝密|内部资料|身份证|工资|薪资|银行|账号密码)/;
+
+async function pushGuard(root) {
+  // 必须加 --untracked-files=all：默认会把整个未跟踪目录折叠成一行，
+  // 那样就看不到目录里面的文件，拦截器等于失效。
+  // core.quotepath=false：否则中文路径会被转义，拼不回真实路径。
+  const status = git(['-c', 'core.quotepath=false', 'status', '--porcelain', '--untracked-files=all'], { root }).stdout;
+  const changed = status.split(/\r?\n/).filter(Boolean)
+    .map((line) => line.slice(3).trim())
+    .map((p) => (p.includes(' -> ') ? p.split(' -> ').pop() : p))
+    .map((p) => p.replace(/^"|"$/g, ''));
+  const secrets = [];
+  const words = [];
+  const big = [];
+  for (const rel of changed) {
+    const full = path.join(root, rel);
+    let st;
+    try { st = fs.statSync(full); } catch { continue; }
+    if (!st.isFile()) continue;
+    const base = path.basename(rel);
+    if (SECRET_NAME.test(base)) secrets.push(rel);
+    else if (SENSITIVE_WORD.test(base)) words.push(rel);
+    if (st.size > 20 * 1024 * 1024) big.push({ rel, size: st.size });
+  }
+
+  if (secrets.length > 0 && !args['allow-risky']) {
+    bad('这些文件看着像密钥，先拦下来了（万一仓库是公开的，传上去就等于泄密）：');
+    secrets.forEach((f) => say(`     ${f}`));
+    info('确认没问题再加参数 --allow-risky 强制上传；否则请先移到 _private/ 或删掉。');
+    return false;
+  }
+  if (big.length === 0 && words.length === 0) return true;
+
+  if (big.length > 0) {
+    warn('这些文件偏大，上传会慢，而且 Git 历史里会一直留着：');
+    big.forEach((f) => say(`     ${f.rel}   ${human(f.size)}`));
+    info('GitHub 限制：单个文件超过 100 MB 直接拒收，超过 50 MB 会警告，仓库越大 clone 越慢。');
+  }
+  if (words.length > 0) {
+    warn('这些文件名里有敏感词，传上去别人就能看到：');
+    words.forEach((f) => say(`     ${f}`));
+  }
+  if (args['allow-big'] || args['allow-risky']) return true;
+  const ans = String(await ask('确定要上传这些吗？(y/n)', 'n')).toLowerCase();
+  if (ans !== 'y' && ans !== 'yes') {
+    info('已取消上传 —— 东西都还在你本机，没有被删。');
+    return false;
+  }
+  return true;
+}
+
 async function actionPush(firstTime = false) {
-  head(firstTime ? '第 3 步：首次上传到 GitHub' : '保存并上传');
+  head(firstTime ? `第 3 步：首次上传到 GitHub` : '保存并上传');
   const root = syncRoot();
   if (!fs.existsSync(root)) { bad(`同步文件夹不存在：${root}`); info('先做第 1 步（菜单选 1）。'); return; }
   if (!gitState().isRepo) { bad('这还不是 Git 仓库。'); info('先做第 2 步（菜单选 2）。'); return; }
@@ -618,16 +854,21 @@ async function actionPush(firstTime = false) {
   ensureIdentity();
   writeRepoFiles(root);
   copyToolIntoRepo(root);
-  await actionCatalog(true);
+  await refreshCatalog(true);
 
-  const stats = walkStats(path.join(root, REPO_SUBDIR));
-  info(`技能目录：${stats.files} 个文件，${human(stats.bytes)}`);
+  const stats = walkStats(path.join(root, unit().sub));
+  info(`${unit().dirLabel}：${stats.files} 个文件，${human(stats.bytes)}`);
+  if (firstTime && unit().key === 'kb') {
+    info('提醒：这个仓库是公开的，放进去的东西任何人都能看、也可能被搜索引擎收录。');
+    info('不方便公开的放 _private/ 子目录（已在 .gitignore 里，永远不会上传）。');
+  }
+  if (!(await pushGuard(root))) return;
 
   gitOk(['add', '-A'], { root: root });
   const staged = git(['diff', '--cached', '--name-only'], { root: root }).stdout;
   if (staged) {
     const count = staged.split(/\r?\n/).filter(Boolean).length;
-    const msg = `${IS_WIN ? 'Windows' : 'macOS'} ${HOST}: ${firstTime ? '首次上传' : '更新'}技能（${count} 个文件）`;
+    const msg = `${IS_WIN ? 'Windows' : 'macOS'} ${HOST}: ${firstTime ? '首次上传' : '更新'}${unit().label}（${count} 个文件）`;
     const commit = git(['commit', '-m', msg], { root });
     if (commit.code !== 0) {
       // 兜底：Git 返回码有时会被奇怪地污染（比如输出量太大），先确认提交到底建没建立
@@ -641,10 +882,10 @@ async function actionPush(firstTime = false) {
         return;
       }
     } else {
-      ok(`已提交 ${count} 个改动（技能 + 清单 + 工具）`);
+      ok(`已提交 ${count} 个改动（${unit().label} + 清单 + 工具）`);
     }
   } else {
-    ok('没有新改动（技能和上次一样）');
+    ok(`没有新改动（${unit().label}和上次一样）`);
   }
   git(['branch', '-M', 'main'], { root });
 
@@ -663,7 +904,7 @@ async function actionPush(firstTime = false) {
   // 上传被挡住，十有八九是另一台设备先推了 —— 先合并回来再推一次，
   // 这样"两边各自加技能"最后就是并集，不用你自己去 pull。
   if (push.code !== 0 && remoteAhead(root)) {
-    const before = skillNames(path.join(root, REPO_SUBDIR));
+    const before = skillNames(path.join(root, unit().sub));
     say('  另一台设备已经推过东西了，先合并回来再上传…');
     const merged = await mergeRemote(root);
     if (!merged.ok) {
@@ -672,15 +913,15 @@ async function actionPush(firstTime = false) {
       else say(`     ${String(merged.output || '').split(/\r?\n/).slice(0, 6).join('\n     ')}`);
       return;
     }
-    const after = skillNames(path.join(root, REPO_SUBDIR));
+    const after = skillNames(path.join(root, unit().sub));
     const d = listDiff(before, after);
     if (d.added.length) ok(`合并进来这些技能：${d.added.join('、')}`);
     if (d.removed.length) info(`另一台删掉了这些技能：${d.removed.join('、')}`);
     // 合并后的清单按并集重建，保证和真实技能一致
-    await actionCatalog(true);
+    await refreshCatalog(true);
     git(['add', '-A'], { root });
     if ((git(['diff', '--cached', '--name-only'], { root }).stdout || '').length > 0) {
-      git(['commit', '-m', `${IS_WIN ? 'Windows' : 'macOS'} ${HOST}: 合并另一台设备后重建技能清单`], { root });
+      git(['commit', '-m', `${IS_WIN ? 'Windows' : 'macOS'} ${HOST}: 合并另一台设备后重建${unit().label}清单`], { root });
     }
     push = git(['push', '-u', 'origin', 'main'], { root });
   }
@@ -703,12 +944,11 @@ async function actionPush(firstTime = false) {
   if (localSha && localSha === remoteSha) {
     ok(`上传成功，并且核对一致：${localSha.slice(0, 8)}`);
     saveSettings({ root, remote, lastPush: new Date().toISOString() });
-    const names = skillNames(path.join(root, REPO_SUBDIR));
-    ok(`本机现在一共 ${names.length} 个技能：${names.join('、')}`);
+    ok(unitSummary(path.join(root, unit().sub)));
     info('另一台设备点【拉取更新】就会变成同一套（并集）。');
     say();
     say('  以后就两件事：');
-    say('    - 改完技能 -> 菜单 4【保存并上传】');
+    say(`    - 改完${unit().label} -> 菜单 4【保存并上传】`);
     say('    - 换设备开用 -> 菜单 5【拉取更新】');
   } else {
     warn('上传命令执行完了，但没核对一致，请再点一次菜单 6 体检看看。');
@@ -719,7 +959,7 @@ function ensureIdentity() {
   const name = git(['config', '--global', '--get', 'user.name']).stdout;
   const email = git(['config', '--global', '--get', 'user.email']).stdout;
   if (name && email) return;
-  const fallbackEmail = suggestEmail(loadSettings().remote) || `${USER}@${HOST}`;
+  const fallbackEmail = suggestEmail(unitSettings().remote) || `${USER}@${HOST}`;
   if (!name) git(['config', '--global', 'user.name', USER]);
   if (!email) git(['config', '--global', 'user.email', fallbackEmail]);
   ok(`Git 提交身份原本没设置，已自动填好：${name || USER} <${email || fallbackEmail}>`);
@@ -727,14 +967,15 @@ function ensureIdentity() {
 }
 
 function copyToolIntoRepo(root) {
+  if (!unit().shipsTool) return;   // 知识库仓库不带工具（工具跟着技能库走，只留一份）
   const dest = path.join(root, TOOL_SUBDIR);
   fs.mkdirSync(dest, { recursive: true });
-  for (const f of ['skills-sync.mjs', '同步助手.cmd', '同步助手.command']) {
+  const files = fs.readdirSync(TOOL_DIR).filter((f) => f === 'skills-sync.mjs' || f.endsWith('.cmd') || f.endsWith('.command'));
+  for (const f of files) {
     const src = path.join(TOOL_DIR, f);
-    if (fs.existsSync(src)) {
-      fs.copyFileSync(src, path.join(dest, f));
-      if (!IS_WIN && f.endsWith('.command')) fs.chmodSync(path.join(dest, f), 0o755);
-    }
+    if (!fs.statSync(src).isFile()) continue;
+    fs.copyFileSync(src, path.join(dest, f));
+    if (!IS_WIN && f.endsWith('.command')) fs.chmodSync(path.join(dest, f), 0o755);
   }
 }
 
@@ -744,7 +985,7 @@ async function actionPull() {
   head('拉取更新（把另一台设备的改动取回本机）');
   const root = syncRoot();
   const s = gitState();
-  const skillsRoot = path.join(root, REPO_SUBDIR);
+  const skillsRoot = path.join(root, unit().sub);
   if (!s.isRepo || !s.remote) { bad('本机还没连上 GitHub 仓库。'); info('先做第 2 步（菜单选 2），或者用第 8 项克隆技能库。'); return; }
 
   const fetch = git(['fetch', '--prune'], { root });
@@ -756,12 +997,11 @@ async function actionPull() {
     info(`本机领先 ${ahead} 个提交，落后 ${behind} 个提交`);
     if (behind === '0') {
       ok('已经是最新的，不用拉。');
-      const names = skillNames(skillsRoot);
-      ok(`本机现在一共 ${names.length} 个技能：${names.join('、')}`);
+      ok(unitSummary(skillsRoot));
       return;
     }
   }
-  const before = skillNames(skillsRoot);
+  const before = unitList(skillsRoot);
   // 还没建立上游时（比如刚 clone 完别人推的分支），直接用显式分支名拉
   const pullArgs = upstream.code === 0
     ? ['pull', '--no-rebase', '--no-edit', '--autostash']
@@ -781,23 +1021,23 @@ async function actionPull() {
   ok('已拉取到最新');
   say(`     ${pull.stdout.split(/\r?\n/).slice(0, 10).join('\n     ')}`);
 
-  const after = skillNames(skillsRoot);
+  const after = unitList(skillsRoot);
   const d = listDiff(before, after);
   if (d.added.length) ok(`这次多出这些技能：${d.added.join('、')}`);
   if (d.removed.length) info(`这次少了这些技能：${d.removed.join('、')}（另一台删掉过）`);
 
-  // 按合并后的技能集合重建清单；有变化就顺手提交，让 GitHub 上也保持一致
-  await actionCatalog(true);
-  git(['add', CATALOG_NAME], { root });
+  // 按合并后的内容重建清单；有变化就顺手提交，让 GitHub 上也保持一致
+  await refreshCatalog(true);
+  if (unit().catalogMode === 'skills') git(['add', unit().catalogName], { root });
+  else git(['add', '-A'], { root });
   if ((git(['diff', '--cached', '--name-only'], { root }).stdout || '').length > 0) {
-    git(['commit', '-m', `${IS_WIN ? 'Windows' : 'macOS'} ${HOST}: 按合并后的技能重建清单`], { root });
+    git(['commit', '-m', `${IS_WIN ? 'Windows' : 'macOS'} ${HOST}: 按合并后的${unit().label}重建清单`], { root });
     const pushed = git(['push'], { root });
     if (pushed.code === 0) ok('清单已按并集重建，并同步回 GitHub');
     else info('清单已按并集重建（下次【保存并上传】会一起提交）');
   }
 
-  const names = skillNames(skillsRoot);
-  ok(`本机现在一共 ${names.length} 个技能：${names.join('、')}`);
+  ok(unitSummary(skillsRoot));
   say();
   info('提示：技能有变化的话，重开一次 DSH 让它重新扫描技能列表。');
 }
@@ -806,7 +1046,7 @@ async function actionPull() {
 
 async function actionClone(urlArg, rootArg) {
   head('换新设备：把技能库克隆到本机并接管');
-  const url = urlArg || (await ask('技能库的 GitHub 地址（https://…/dsh-skills.git）', loadSettings().remote || ''));
+  const url = urlArg || (await ask('技能库的 GitHub 地址（https://…/dsh-skills.git）', unitSettings().remote || ''));
   if (!url) { info('已取消。'); return; }
   const root = rootArg || (await ask('放在哪个文件夹', syncRoot()));
   if (fs.existsSync(path.join(root, '.git'))) {
@@ -826,8 +1066,8 @@ async function actionClone(urlArg, rootArg) {
   }
   saveSettings({ root, remote: url });
 
-  const target = path.join(root, REPO_SUBDIR);
-  const live = skillsDirPath();
+  const target = path.join(root, unit().sub);
+  const live = livePath();
   const existing = linkTarget(live);
   let mergedIn = [];
   let bothSides = [];
@@ -835,18 +1075,28 @@ async function actionClone(urlArg, rootArg) {
   if (existing && existing !== '') {
     ok(`技能目录已经是链接（${existing}），不用再建。`);
   } else if (fs.existsSync(live)) {
-    // 关键：本机原有的技能不是"扔掉不要"，而是**并**进来。
-    // 两边同名但内容可能不同的，保留远端那份，本机那份整目录备份走，由你来决定。
-    const localNames = skillNames(live);
-    const remoteNames = skillNames(target);
-    mergedIn = localNames.filter((n) => !remoteNames.includes(n));
-    bothSides = localNames.filter((n) => remoteNames.includes(n));
-    for (const name of mergedIn) {
-      const from = path.join(live, name);
-      const to = path.join(target, name);
-      const moved = moveDir(from, to);
-      if (!moved.ok) warn(`技能 ${name} 并进来时失败：${moved.error}`);
-      else ok(`把本机已有的技能并进技能库：${name}`);
+    // 关键：本机原有的东西不是"扔掉不要"，而是**并**进来。
+    // 两边同名但内容可能不同的，保留远端那份，本机那份备份走，由你来决定。
+    if (unit().catalogMode === 'skills') {
+      const localNames = skillNames(live);
+      const remoteNames = skillNames(target);
+      mergedIn = localNames.filter((n) => !remoteNames.includes(n));
+      bothSides = localNames.filter((n) => remoteNames.includes(n));
+      for (const name of mergedIn) {
+        const moved = moveDir(path.join(live, name), path.join(target, name));
+        if (!moved.ok) warn(`技能 ${name} 并进来时失败：${moved.error}`);
+        else ok(`把本机已有的技能并进技能库：${name}`);
+      }
+    } else {
+      // 知识库：按文件逐个并 —— 目标里没有的复制过来，同名的不覆盖（留给备份）
+      const merged = mergeTreeInto(live, target);
+      mergedIn = merged.added;
+      bothSides = merged.both;
+      if (mergedIn.length > 0) {
+        ok(`把本机已有的 ${mergedIn.length} 个文件并进知识库`);
+        for (const f of mergedIn.slice(0, 10)) say(`     ${f}`);
+        if (mergedIn.length > 10) say(`     …另外 ${mergedIn.length - 10} 个`);
+      }
     }
     const rest = walkStats(live);
     if (rest.files > 0 || bothSides.length > 0) {
@@ -854,7 +1104,7 @@ async function actionClone(urlArg, rootArg) {
       fs.renameSync(live, backup);
       info(`本机原有的技能目录已改名备份：${backup}`);
       if (bothSides.length > 0) {
-        warn(`这些技能两边都有，先用了远端的版本，本机那份在备份里：${bothSides.join('、')}`);
+        warn(`这些技能两边都有，先用了远端的版本，本机那份在备份里：${shortList(bothSides)}`);
       }
       info('确认没问题后可以删掉这个备份目录。');
     } else {
@@ -870,31 +1120,36 @@ async function actionClone(urlArg, rootArg) {
     ok(`链接已建立：${live}  ->  ${target}`);
   }
 
-  // macOS：让双击启动器可执行
+  // macOS：让双击启动器可执行（技能库/知识库都检查一遍）
   if (!IS_WIN) {
-    const launcher = path.join(root, TOOL_SUBDIR, '同步助手.command');
-    if (fs.existsSync(launcher)) { try { fs.chmodSync(launcher, 0o755); } catch { /* 忽略 */ } }
+    const toolDir = path.join(root, TOOL_SUBDIR);
+    if (fs.existsSync(toolDir)) {
+      for (const f of fs.readdirSync(toolDir)) {
+        if (!f.endsWith('.command')) continue;
+        try { fs.chmodSync(path.join(toolDir, f), 0o755); } catch { /* 忽略 */ }
+      }
+    }
   }
 
-  await actionCatalog(true);
+  await refreshCatalog(true);
   if (mergedIn.length > 0) {
-    // 把并进来的技能提交并推上去，另一台这才看得到
+    // 把并进来的东西提交并推上去，另一台这才看得到
     writeRepoFiles(root);
     copyToolIntoRepo(root);
     git(['add', '-A'], { root });
-    const commit = git(['commit', '-m', `${IS_WIN ? 'Windows' : 'macOS'} ${HOST}: 合并本机已有的技能（${mergedIn.join('、')}）`], { root });
+    const commit = git(['commit', '-m', `${IS_WIN ? 'Windows' : 'macOS'} ${HOST}: 合并本机已有的${unit().label}（${shortList(mergedIn)}）`], { root });
     if (commit.code === 0) {
       const pushed = git(['push'], { root });
-      if (pushed.code === 0) ok('已把这几个技能也上传，另一台拉取后就是并集');
+      if (pushed.code === 0) ok('已经上传，另一台拉取后就是并集');
       else info('暂时没能上传（联网/登录问题），下次【保存并上传】会一起提交');
     }
   }
-  const skills = scanSkills(target);
   say();
-  ok(`本机现在有 ${skills.list.length} 个技能：${skillNames(target).join('、')}`);
-  if (backup) info(`本机原有技能的备份：${backup}`);
-  info('重开一次 DSH，技能就能用了。');
-  info('以后改完技能：【保存并上传】（菜单 4）；换回另一台前先在那台【拉取更新】。');
+  ok(unitSummary(target));
+  if (backup) info(`本机原有的备份目录：${backup}`);
+  if (unit().catalogMode === 'skills') info('重开一次 DSH，技能就能用了。');
+  else info(`${unit().label}已经在 ${live}，直接打开就能用。`);
+  info(`以后改完${unit().label}：【保存并上传】（菜单 4）；换回另一台前先在那台【拉取更新】。`);
 }
 
 // ───────────────────────────────────────────────────────── 技能清单 SKILLS.md
@@ -919,9 +1174,11 @@ const KNOWN_TIPS = {
 };
 
 async function actionCatalog(silent = false) {
+  // 知识库走另一套：INDEX.md 由你自己维护，工具只刷新各子库的 _清单.md
+  if (unit().catalogMode === 'inventory') return actionInventory(silent);
   const root = syncRoot();
-  const skillsRoot = path.join(root, REPO_SUBDIR);
-  const live = skillsDirPath();
+  const skillsRoot = path.join(root, unit().sub);
+  const live = livePath();
   // 还没搬家时，就直接扫描你当前的技能目录 —— 这样"菜单 7"在第 1 步之前也能用
   const scanRoot = fs.existsSync(skillsRoot) ? skillsRoot : live;
   if (!fs.existsSync(scanRoot)) {
@@ -990,11 +1247,11 @@ async function actionCatalog(silent = false) {
   lines.push('- 换设备：先在那台设备 clone 技能库 -> 菜单 5【拉取更新】');
   lines.push('- 想手动看：这个文件就在技能库根目录，GitHub 网页上也能看到');
 
-  const out = path.join(inRepo && fs.existsSync(root) ? root : TOOL_DIR, CATALOG_NAME);
+  const out = path.join(inRepo && fs.existsSync(root) ? root : TOOL_DIR, unit().catalogName);
   fs.writeFileSync(out, `${lines.join('\n')}\n`, 'utf8');
   // 搬家之后清单归仓库管，把之前放在工具目录里的那份预览删掉，免得两份混淆
   if (inRepo) {
-    const stale = path.join(TOOL_DIR, CATALOG_NAME);
+    const stale = path.join(TOOL_DIR, unit().catalogName);
     if (fs.existsSync(stale)) { try { fs.rmSync(stale); } catch { /* 忽略 */ } }
   }
 
@@ -1012,38 +1269,133 @@ async function actionCatalog(silent = false) {
   return out;
 }
 
+// ───────────────────────────────────────────────────────── 知识库清单 _清单.md
+
+/** 刷新每个子库里的 _清单.md（自动生成）。
+ *  INDEX.md 和 _说明.md 由人维护：AI 看不到 pptx/docx 里的内容，
+ *  只能靠 _说明.md 里"每个文件一句用途"来判断要不要用。 */
+async function actionInventory(silent = false) {
+  const root = syncRoot();
+  const kbRoot = path.join(root, unit().sub);
+  const live = livePath();
+  const scanRoot = fs.existsSync(kbRoot) ? kbRoot : live;
+  if (!fs.existsSync(scanRoot)) {
+    if (!silent) { bad(`还没找到${unit().dirLabel}：${scanRoot}`); info('先做第 1 步（菜单选 1）。'); }
+    return [];
+  }
+  const SKIP = new Set(['_private', '_work', '.git', 'node_modules', '_sync-tool']);
+  const dirs = fs.readdirSync(scanRoot, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && !d.name.startsWith('.') && !SKIP.has(d.name))
+    .map((d) => d.name).sort();
+  const written = [];
+  let undoc = 0;
+  for (const name of dirs) {
+    const dir = path.join(scanRoot, name);
+    const files = [];
+    const walk = (p, rel) => {
+      for (const e of fs.readdirSync(p, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (e.name === '_清单.md' || e.name.startsWith('.')) continue;
+        const full = path.join(p, e.name);
+        const r = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) walk(full, r);
+        else { const st = fs.statSync(full); files.push({ rel: r, size: st.size, mtime: st.mtime }); }
+      }
+    };
+    try { walk(dir, ''); } catch { continue; }
+
+    // 从 _说明.md 里抓"每个文件的用途说明"，形如：  - `文件名.pptx`：这是……风格，适合……
+    const notes = {};
+    const readme = path.join(dir, '_说明.md');
+    if (fs.existsSync(readme)) {
+      for (const line of fs.readFileSync(readme, 'utf8').split(/\r?\n/)) {
+        const m = line.match(/^\s*[-*]\s*`([^`]+)`\s*[:：]\s*(.+)$/);
+        if (m) notes[m[1].trim()] = m[2].trim();
+      }
+    }
+
+    const lines = [];
+    lines.push(`# ${name} · 文件清单`);
+    lines.push('');
+    lines.push('> 这个文件由同步助手自动生成，手改会被覆盖。要写说明请写进同目录的 `_说明.md`：');
+    lines.push('> 格式 `- `文件名.pptx`：这句话是给 AI 看的，说清用途、风格、适用场合。');
+    lines.push('');
+    lines.push(`一共 ${files.length} 个文件，${human(files.reduce((n, f) => n + f.size, 0))}。`);
+    lines.push('');
+    if (files.length === 0) {
+      lines.push('（这个子库还没有文件。）');
+    } else {
+      lines.push('| 文件 | 说明（来自 _说明.md） | 大小 | 修改时间 |');
+      lines.push('|---|---|---|---|');
+      for (const f of files) {
+        const isDoc = path.basename(f.rel) === '_说明.md';
+        const note = notes[f.rel] || notes[path.basename(f.rel)] || (isDoc ? '（本子库的说明文件）' : '');
+        if (!note && !isDoc) undoc += 1;
+        const when = `${f.mtime.getFullYear()}-${String(f.mtime.getMonth() + 1).padStart(2, '0')}-${String(f.mtime.getDate()).padStart(2, '0')}`;
+        lines.push(`| \`${f.rel}\` | ${note ? note.replace(/\|/g, '/') : '（还没写说明）'} | ${human(f.size)} | ${when} |`);
+      }
+      const missing = files.filter((f) => path.basename(f.rel) !== '_说明.md' && !(notes[f.rel] || notes[path.basename(f.rel)]));
+      if (missing.length > 0) {
+        lines.push('');
+        lines.push(`> 提示：上面有 ${missing.length} 个文件还没写说明。AI 读不到 pptx/docx 里的内容，`);
+        lines.push('> 只能靠 `_说明.md` 里那句话判断该不该用它 —— 没写的文件等于找不到。');
+      }
+    }
+    lines.push('');
+    const out = path.join(dir, '_清单.md');
+    const text = `${lines.join('\n')}\n`;
+    const before = fs.existsSync(out) ? fs.readFileSync(out, 'utf8') : '';
+    if (before !== text) { fs.writeFileSync(out, text, 'utf8'); written.push(`${name}/_清单.md`); }
+  }
+  if (!silent) {
+    head('知识库清单');
+    if (written.length === 0) ok('清单已经是最新的，没有变化。');
+    else { ok(`已刷新 ${written.length} 个清单：`); written.forEach((w) => say(`     ${w}`)); }
+    if (undoc > 0) warn(`有 ${undoc} 个文件还没写说明（在 _说明.md 里补一句就行）`);
+    info('这些 _清单.md 会跟着仓库同步，AI 就靠它们找到你的文件。');
+  }
+  return written;
+}
+
 // ───────────────────────────────────────────────────────── 菜单
 
 async function menu() {
   for (;;) {
     const s = gitState();
-    const skills = scanSkills(s.skillsRoot);
-    const live = skillsDirPath();
+    const live = livePath();
+    const scanDir = fs.existsSync(s.skillsRoot) ? s.skillsRoot : live;
     const link = s.link;
     say();
     say(LINE);
-    say(`  DSH 技能同步助手          ${IS_WIN ? 'Windows' : process.platform === 'darwin' ? 'macOS' : 'Linux'}`);
+    say(`  DSH 云同步助手 · ${unit().label}库          ${IS_WIN ? 'Windows' : process.platform === 'darwin' ? 'macOS' : 'Linux'}`);
     say(LINE);
-    say(`  技能目录  : ${live}`);
+    say(field(unit().dirLabel, live, 10));
     say(`              ${link && link !== '' ? `-> 链接到 ${link}` : link === '' ? '真实目录（还没接管）' : '不存在'}`);
-    say(`  技能数量  : ${skills.list.length} 个（${skills.list.reduce((n, x) => n + x.files, 0)} 个文件，${human(skills.list.reduce((n, x) => n + x.bytes, 0))}）`);
-    say(`  同步文件夹: ${s.root}${s.rootExists ? '' : '  (不存在)'}`);
-    say(`  同步仓库  : ${s.remote || '未设置'}`);
+    if (unit().catalogMode === 'skills') {
+      const skills = scanSkills(scanDir);
+      say(field('技能数量', `${skills.list.length} 个（${skills.list.reduce((n, x) => n + x.files, 0)} 个文件，${human(skills.list.reduce((n, x) => n + x.bytes, 0))}）`, 10));
+    } else {
+      const st = walkStats(scanDir);
+      say(field('文件数量', `${st.files} 个，${human(st.bytes)}`, 10));
+    }
+    say(field('同步文件夹', `${s.root}${s.rootExists ? '' : '  (不存在)'}`, 10));
+    say(field('同步仓库', s.remote || '未设置', 10));
     const gitVer = GIT ? run(GIT, ['--version']).stdout : '';
-    say(`  git       : ${gitVer || (GIT ? '找到了但没法执行' : '未找到（需要先安装 git）')}`);
+    say(field('git', gitVer || (GIT ? '找到了但没法执行' : '未找到（需要先安装 git）'), 10));
     say();
     say(`  建议下一步：${await nextStepText()}`);
     say();
     say('  第一次使用（按顺序做 1 -> 2 -> 3）：');
-    say('    1  把技能搬进同步文件夹并接管');
+    say(`    1  把${unit().label}搬进同步文件夹并接管`);
     say('    2  连接 GitHub 仓库（建仓库 / 填地址 / 测通）');
     say('    3  首次上传到 GitHub');
     say(THIN);
     say('    4  日常：保存并上传');
     say('    5  日常：拉取更新（换设备/另一台改完后）');
     say('    6  体检：看看现在什么状态');
-    say('    7  生成技能清单 SKILLS.md');
-    say('    8  换新设备：克隆技能库并接管');
+    say(unit().catalogMode === 'skills'
+      ? '    7  生成技能清单 SKILLS.md'
+      : '    7  刷新各子库文件清单（_清单.md）');
+    say(`    8  换新设备：克隆${unit().label}库并接管`);
     say('    0  退出');
     say();
     const choice = await ask('请输入数字', '');
@@ -1084,21 +1436,23 @@ function parseArgv(argv) {
 const args = parseArgv(process.argv.slice(2));
 
 function usage() {
-  say('DSH 技能同步助手');
+  say('DSH 云同步助手（技能库和知识库共用一个工具）');
   say('');
-  say('  最常用：直接双击 同步助手.cmd / 同步助手.command，然后按菜单数字选。');
+  say('  最常用：直接双击 同步助手.cmd（技能库）或 知识库助手.cmd（知识库），按菜单数字选。');
   say('');
-  say('  命令行也行：');
+  say('  命令行也行，默认操作技能库，加 --unit kb 就是知识库：');
   say('    node skills-sync.mjs status                     体检');
   say('    node skills-sync.mjs link                       第1步：搬家+接管');
   say('    node skills-sync.mjs remote --url <仓库地址>     第2步：连接 GitHub');
   say('    node skills-sync.mjs push                       第3步：首次上传');
   say('    node skills-sync.mjs save                       日常：保存并上传');
   say('    node skills-sync.mjs pull                       日常：拉取更新');
-  say('    node skills-sync.mjs catalog                    生成 SKILLS.md');
+  say('    node skills-sync.mjs catalog                    生成清单（知识库=刷新 _清单.md）');
   say('    node skills-sync.mjs clone --url <仓库地址> [--root <目录>]   换新设备');
   say('');
-  say('  可选参数：--root <同步文件夹>  --home <用户目录>  --skills-dir <技能目录>  --yes');
+  say('  可选参数：--unit kb  --root <同步文件夹>  --home <用户目录>');
+  say('            --skills-dir <技能目录>   --kb-dir <知识库目录>');
+  say('            --yes（不再问）  --allow-big / --allow-risky（跳过上传前的拦截）');
 }
 
 async function main() {
