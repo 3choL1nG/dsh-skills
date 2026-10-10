@@ -1,0 +1,44 @@
+{
+  "tool": "cangjie-tools v2.5.0",
+  "published_hashes": {
+    "references\\capabilities\\boundary-three-kinds.md": "5365a965b44d160a4266c89bd0b3a7efe0c279e7b726adad891c4c35847705aa",
+    "references\\capabilities\\conflict-protocol.md": "fd0b9f61d83da6fd4ec8a1bbe8874705a977f375234c3f640a3c97ce841ba6ad",
+    "references\\capabilities\\crisis-navigation.md": "2d0bafac270a22afe2538193bde7fc86117ffa34028ef56a57a0cce2edc36891",
+    "references\\capabilities\\difference-value-judgment.md": "526e05693a001815f40f3fdbf345f818221fb5760dc7d2650ead8609189f6d66",
+    "references\\capabilities\\entry-routes-proactive.md": "5525a175e7b0c136b6b185b7348dac348cb5bb54c43ef14a06de6c380c711b4d",
+    "references\\capabilities\\family-origin-core-complex.md": "7e117249e901023ca7d34ae2437ddfbda09745eaa4d6ca04bd33b469282e858f",
+    "references\\capabilities\\long-term-maintenance.md": "b3130c5d3c2943fee42c3d013373794d060509fa70a0552b6991385d2c83a63e",
+    "references\\capabilities\\love-script-audit.md": "6d26918f0f6ae859b43172aa97b32a694aa86100b868b91d079125250125a9c0",
+    "references\\capabilities\\marriage-decision.md": "d80c767bf31ec09cb6757cf6821fc8a8e11da30c70a2992d67980e87161e6749",
+    "references\\capabilities\\money-and-giving.md": "2fc0169fc2a7e4bf396d9d8cb4b54ca3679a03dd41c53ca65a14c7477b6f5768",
+    "references\\capabilities\\mr-wrong-baseline.md": "9b806b826636e46e9e2b44dffc7eff402ac9b3c8c9be75de79cd7996c1a5d077",
+    "references\\capabilities\\relationship-health-scan.md": "d63770ef4f52dac09e5271516f3f4153fa5eb017031b0509601fa5570ff218e7",
+    "references\\capabilities\\safety-exit.md": "3e3369780e3d59c61766da7d07a4d25433f9fd2b7e55e71b322ad91cc84eb1ac",
+    "references\\capabilities\\three-view-triage.md": "22d54386635a4e84a9bcdac810c68ac0dbd2bcc6aaec811243e6df753e744258",
+    "references\\capability-index.md": "f61576c8e037e93b6d38866e82a497193f59117fcba1228b388618a12ea0b3e5",
+    "references\\cheatsheet.md": "d3d605bbca721513260da2d75c24002a0f8d43cc16d6bfd437b74dab9bd5709f",
+    "references\\glossary.md": "3b311d808b2b7f4f6111461fa3079a200f6213ccaaa1a0f24586b639764fd531",
+    "references\\overview.md": "f37b75c88b8ed02075b25f167fbc907f4bed8944bffbfece5d3b7493d0ab2ea5",
+    "SKILL.md": "21b61fa59c315b5d887291f93b3d2745ecfef78d1957298ea82e44757c361b62"
+  },
+  "note": "update/重编译前比对 published_hashes；检测到本地手改不得静默覆盖",
+  "bundle_id": "bundle.love-script-practice",
+  "bundle_sha256": "4354861a5cda3edb017ec6903ebeba78cb4cdba1c8a70329f5db9dbf17c3ce52",
+  "variant": "single",
+  "run_id": "run-20261011-030941-4644af",
+  "decision": {
+    "schema_version": 1,
+    "requested": "single",
+    "selected": "single",
+    "decision_policy": "single-first-v1",
+    "skill_budget": 8,
+    "promoted_count": 0,
+    "capability_count": 14,
+    "reasons": [
+      "用户显式选择 single，auto 决策器不覆盖用户选择"
+    ],
+    "alternative": "compact pack（1 个来源路由入口 + 0 个晋级 Skill，共 1 个可发现入口）",
+    "user_confirmed": true,
+    "preserve_strategy_on_update": true
+  }
+}
