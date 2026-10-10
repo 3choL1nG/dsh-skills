@@ -954,11 +954,12 @@ async function actionPush(firstTime = false) {
   say(firstTime
     ? '  正在上传到 GitHub…（技能文件多的话第一次要几分钟）'
     : '  正在上传到 GitHub…');
-  let push = git(['push', '-u', 'origin', 'main'], { root });
+  let push = pushWithRetry(root, 'main');
 
   // 上传被挡住，十有八九是另一台设备先推了 —— 先合并回来再推一次，
   // 这样"两边各自加技能"最后就是并集，不用你自己去 pull。
-  if (push.code !== 0 && remoteAhead(root)) {
+  // （网络类失败不走这条路：那跟"谁先推的"没关系，重试已经在上面做过了）
+  if (push.code !== 0 && !push.network && remoteAhead(root)) {
     const before = skillNames(path.join(root, unit().sub));
     say('  另一台设备已经推过东西了，先合并回来再上传…');
     const merged = await mergeRemote(root);
@@ -978,13 +979,20 @@ async function actionPush(firstTime = false) {
     if ((git(['diff', '--cached', '--name-only'], { root }).stdout || '').length > 0) {
       git(['commit', '-m', `${IS_WIN ? 'Windows' : 'macOS'} ${HOST}: 合并另一台设备后重建${unit().label}清单`], { root });
     }
-    push = git(['push', '-u', 'origin', 'main'], { root });
+    push = pushWithRetry(root, 'main');
   }
 
   if (push.code !== 0) {
     bad('上传失败：');
     say(`     ${push.out.split(/\r?\n/).slice(0, 6).join('\n     ')}`);
     say();
+    if (push.network) {
+      warn(`看起来是网络问题：自动重试 ${push.attempts} 次都没连上 github.com。`);
+      info('你的改动已经安全提交在本机了，一个字都不会丢，过会儿再按一次 4 就行。');
+      info('更稳的办法：打开 Clash Verge 并开启"系统代理"，然后按一次 4（可以让我把 git 也指过去）。');
+      info('应急办法：手机热点连一次，或者晚点再试。');
+      return;
+    }
     info('常见原因：');
     info('  1) 需要登录 —— 再运行一次本菜单，Git 会弹出登录窗口');
     info('  2) 仓库地址不对 —— 菜单 2 重新填一次');
@@ -1008,6 +1016,43 @@ async function actionPush(firstTime = false) {
   } else {
     warn('上传命令执行完了，但没核对一致，请再点一次菜单 6 体检看看。');
   }
+}
+
+/** 同步等待若干毫秒（Node 自带，不依赖第三方库） */
+function sleepSync(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* 忽略 */ }
+}
+
+/** 哪些报错算"网络抽风"（国内直连 GitHub 经常三连一成功，这种就值得重试） */
+const NET_FAIL = /Could not connect|Failed to connect|Connection (was )?reset|timed out|timeout|Could not resolve host|TLS|SSL|unable to access|Recv failure|remote end hung up|RPC failed|early EOF|unexpected disconnect/i;
+
+/** 网络类失败就重试的 git 调用（只用于读操作/可安全重放的操作） */
+function gitWithNetRetry(args, opts, tries = 3, label = '访问 GitHub') {
+  let last = null;
+  for (let i = 1; i <= tries; i += 1) {
+    const r = git(args, opts);
+    if (r.code === 0) return r;
+    last = r;
+    if (!NET_FAIL.test(String(r.out || ''))) return r;
+    if (i < tries) { info(`${label}没连上，等 5 秒再试（第 ${i + 1}/${tries} 次）…`); sleepSync(5000); }
+  }
+  return last;
+}
+
+/** 推送到 GitHub：网络类失败自动重试几次，避免"其实没问题却报失败" */
+function pushWithRetry(root, branch, tries = 4) {
+  let last = null;
+  for (let i = 1; i <= tries; i += 1) {
+    const r = git(['push', '-u', 'origin', branch], { root });
+    if (r.code === 0) return { ...r, network: false, attempts: i };
+    last = r;
+    if (!NET_FAIL.test(String(r.out || ''))) return { ...r, network: false, attempts: i };
+    if (i < tries) {
+      info(`没连上 GitHub（网络抽风），等 5 秒再试（第 ${i + 1}/${tries} 次）…`);
+      sleepSync(5000);
+    }
+  }
+  return { ...last, network: true, attempts: tries };
 }
 
 function ensureIdentity() {
@@ -1043,7 +1088,7 @@ async function actionPull() {
   const skillsRoot = path.join(root, unit().sub);
   if (!s.isRepo || !s.remote) { bad('本机还没连上 GitHub 仓库。'); info('先做第 2 步（菜单选 2），或者用第 8 项克隆技能库。'); return; }
 
-  const fetch = git(['fetch', '--prune'], { root });
+  const fetch = gitWithNetRetry(['fetch', '--prune'], { root }, 3, '拉取时');
   if (fetch.code !== 0) { bad(`连不上远端：${fetch.out.split(/\r?\n/)[0]}`); return; }
   const upstream = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], { root });
   const counts = upstream.code === 0 ? git(['rev-list', '--left-right', '--count', 'HEAD...@{u}'], { root }).stdout : '';
