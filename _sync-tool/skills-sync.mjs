@@ -34,7 +34,14 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const TOOL_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SETTINGS_FILE = path.join(TOOL_DIR, 'settings.json');
+// 工具的设置文件：平时跟脚本放一起（所以从哪份脚本启动就用哪份设置）；
+// 但如果显式给了 --home（多半是自动化测试），就写进那个假 home 里，
+// 免得测试把真机设置冲掉。
+function settingsFile() {
+  if (args.settings) return String(args.settings);
+  if (args.home) return path.join(args.home, '.dsh-sync-settings.json');
+  return path.join(TOOL_DIR, 'settings.json');
+}
 const IS_WIN = process.platform === 'win32';
 const HOME = os.homedir();
 const HOST = os.hostname();
@@ -207,7 +214,7 @@ function gitOk(cmdArgs, opts = {}) {
 
 function loadSettings() {
   try {
-    const raw = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) || {};
+    const raw = JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) || {};
     // 老版本是扁平的 { root, remote }（那时候只有技能库），自动搬进 skills 这一栏
     if (raw.root && !raw.skills) {
       raw.skills = {
@@ -224,7 +231,7 @@ function unitSettings() { return loadSettings()[unit().key] || {}; }
 function saveSettings(patch) {
   const all = loadSettings();
   all[unit().key] = { ...(all[unit().key] || {}), ...patch };
-  fs.writeFileSync(SETTINGS_FILE, `${JSON.stringify(all, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(settingsFile(), `${JSON.stringify(all, null, 2)}\n`, 'utf8');
   return all[unit().key];
 }
 
@@ -1165,6 +1172,9 @@ function skillsRootDir() {
 function kbRulesText() {
   const kb = UNITS.kb.live();
   const kbRoot = (loadSettings().kb || {}).root || UNITS.kb.defaultRoot;
+  // "真实内容在哪儿"以链接指向为准（设置文件里的 root 可能是旧的/被改过的）
+  const linkedTo = linkTarget(kb);
+  const realKb = linkedTo && linkedTo !== '' ? linkedTo : path.join(kbRoot, UNITS.kb.sub);
   const tool = path.join(skillsRootDir(), TOOL_SUBDIR);
   const pyCmd = IS_WIN ? 'python' : 'python3';
   const readTool = `${pyCmd} "${path.join(tool, '归档读文件.py')}"`;
@@ -1174,7 +1184,7 @@ function kbRulesText() {
     RULES_START,
     '## 我的知识库（云端同步，两台设备都有）',
     '',
-    `位置：\`${kb}\`。它是同步仓库的链接（真实内容在 \`${path.join(kbRoot, UNITS.kb.sub)}\`），`,
+    `位置：\`${kb}\`。它是同步仓库的链接（真实内容在 \`${realKb}\`），`,
     '另一台推过之后用【拉取更新】(5) 就同步了。',
     '',
     '### 取用（三步，别跳）',
