@@ -81,6 +81,9 @@ function run(exe, cmdArgs, opts = {}) {
   const res = spawnSync(exe, cmdArgs, {
     encoding: 'utf8',
     windowsHide: true,
+    // 关键：git 提交/拉取上万文件时会逐行打印 create mode ...（轻松超过 1 MB），
+    // 默认上限会把子进程掐掉，看起来就像命令失败。给足 256 MB。
+    maxBuffer: 256 * 1024 * 1024,
     env: { ...process.env, ...(opts.env || {}) },
     cwd: opts.cwd,
   });
@@ -626,8 +629,20 @@ async function actionPush(firstTime = false) {
     const count = staged.split(/\r?\n/).filter(Boolean).length;
     const msg = `${IS_WIN ? 'Windows' : 'macOS'} ${HOST}: ${firstTime ? '首次上传' : '更新'}技能（${count} 个文件）`;
     const commit = git(['commit', '-m', msg], { root });
-    if (commit.code !== 0) { bad(`提交失败：${commit.out.split(/\r?\n/)[0]}`); return; }
-    ok(`已提交 ${count} 个改动（技能 + 清单 + 工具）`);
+    if (commit.code !== 0) {
+      // 兜底：Git 返回码有时会被奇怪地污染（比如输出量太大），先确认提交到底建没建立
+      const head = git(['rev-parse', '--short', 'HEAD'], { root }).stdout;
+      const headMsg = git(['log', '-1', '--format=%s'], { root }).stdout;
+      if (head && headMsg === msg) {
+        ok(`已提交 ${count} 个改动（Git 返回码 ${commit.code}，但提交确实建好了：${head}）`);
+      } else {
+        bad('提交失败：');
+        say(`     ${commit.out.split(/\r?\n/).slice(0, 4).join('\n     ')}`);
+        return;
+      }
+    } else {
+      ok(`已提交 ${count} 个改动（技能 + 清单 + 工具）`);
+    }
   } else {
     ok('没有新改动（技能和上次一样）');
   }
