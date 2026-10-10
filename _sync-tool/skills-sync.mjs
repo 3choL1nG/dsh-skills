@@ -231,7 +231,9 @@ function unitSettings() { return loadSettings()[unit().key] || {}; }
 function saveSettings(patch) {
   const all = loadSettings();
   all[unit().key] = { ...(all[unit().key] || {}), ...patch };
-  fs.writeFileSync(settingsFile(), `${JSON.stringify(all, null, 2)}\n`, 'utf8');
+  const file = settingsFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });   // --home 指到新目录时要先建好
+  fs.writeFileSync(file, `${JSON.stringify(all, null, 2)}\n`, 'utf8');
   return all[unit().key];
 }
 
